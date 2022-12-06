@@ -54,8 +54,9 @@ $user_password
 " | passwd "$username"
 
 # Opendoas configuration
+[ -e "/etc/doas.conf" ] && rm /etc/doas.conf
+[ -e "/usr/bin/sudo" ] && rm /usr/bin/sudo
 echo "permit persist keepenv $username as root
-permit nopass $username as root cmd /usr/local/bin/powerset.sh
 permit nopass $username as root cmd /usr/bin/poweroff
 permit nopass $username as root cmd /usr/bin/reboot
 " >/etc/doas.conf
