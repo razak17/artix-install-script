@@ -21,12 +21,9 @@ ln -s /usr/share/zoneinfo/Africa/"$timezone" /etc/localtime
 locale-gen
 hwclock --systohc --utc
 
-# NetworkManager configuration
-pacman -S networkmanager-openrc --noconfirm
+# NetworkManager and openrc configuration
+pacman -S networkmanager-openrc connman-openrc --noconfirm
 rc-update add NetworkManager
-
-# Connman configuration
-pacman -S connman connman-openrc --noconfirm
 rc-update add connmand
 
 # Bootloader installation and configuration
