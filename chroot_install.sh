@@ -69,7 +69,7 @@ ln -s /usr/bin/doas /usr/bin/sudo
 curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/makepkg.conf -o /etc/makepkg.conf
 
 # Pacman configuration
-curl https://raw.githubusercontent.com/rwinkhart/artix-install-script/main/config-files/pacman.conf -o /etc/pacman.conf
+curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/pacman.conf -o /etc/pacman.conf
 pacman -Sy yay pacman-contrib --noconfirm
 mkdir -p /etc/pacman.d/hooks
 curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/paccache-clean-hook -o /etc/pacman.d/hooks/paccache-clean.hook

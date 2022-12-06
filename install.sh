@@ -6,7 +6,7 @@ echo -e '\nspecial devices:\n1. asus zephyrus g14 (2020)\ngeneric:\n2. laptop\n3
 read -n 1 -r -p "formfactor: " formfactor
 
 fdisk -l
-read -rp "disk: " disk
+read -rp "disk: (eg: /dev/sda) " disk
 
 # Partition disk
 # boot
@@ -32,13 +32,6 @@ if [ -n "$home_partition" ]; then
 	mkfs.ext4 -L HOME "$home_partition"
 else
 	echo "No home partition entered" && exit 1
-fi
-
-# swap
-read -rp "Enter swap partiton: " swap_partition
-if [ -n "$swap_partition" ]; then
-	mkswap -L SWAP "$swap_partition"
-	swapon /dev/disk/by-label/SWAP
 fi
 
 # Mount partitions
