@@ -45,8 +45,8 @@ mount /dev/disk/by-label/BOOT /mnt/boot
 rc-service ntpd start
 
 # Install base system
-base_devel='db diffutils gc guile libisl libmpc perl autoconf automake bash binutils bison esysusers etmpfiles fakeroot file findutils flex gawk gcc gettext grep groff gzip libtool m4 cmake pacman pacman-contrib patch pkgconf python sed opendoas texinfo which bc udev'
-basestrap /mnt base "$base_devel" openrc elogind-openrc linux linux-firmware git micro man-db curl
+base_devel='db diffutils gc guile libisl libmpc perl autoconf automake bash zsh binutils bison esysusers etmpfiles fakeroot file findutils flex gawk gcc gettext grep groff gzip libtool m4 cmake pacman pacman-contrib patch pkgconf python sed opendoas texinfo which bc udev'
+basestrap /mnt base $base_devel openrc elogind-openrc linux linux-firmware git micro man-db curl
 
 # Generate fstab
 fstabgen -U /mnt >>/mnt/etc/fstab
@@ -55,8 +55,8 @@ fstabgen -U /mnt >>/mnt/etc/fstab
 read -rp "username: " username
 read -rp "$username password: " user_password
 read -rp "root password: " root_password
-read -rp "hostname: (eg: Artix)" hostname
-read -r -p "timezone (eg. Accra): " timezone
+read -rp "hostname (eg: Artix): " hostname
+read -rp "timezone (eg. Accra): " timezone
 
 # Start hardware detection
 cpu=$(lscpu | grep 'Vendor ID:' | awk 'FNR == 1 {print $3;}')

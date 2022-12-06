@@ -67,7 +67,7 @@ curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-
 
 # Pacman configuration
 curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/pacman.conf -o /etc/pacman.conf
-pacman -Sy yay pacman-contrib --noconfirm
+pacman -Sy pacman-contrib --noconfirm
 mkdir -p /etc/pacman.d/hooks
 curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/paccache-clean-hook -o /etc/pacman.d/hooks/paccache-clean.hook
 curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/modemmanager-hook -o /etc/pacman.d/hooks/modemmanager.hook
