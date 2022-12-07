@@ -22,17 +22,17 @@ locale-gen
 hwclock --systohc --utc
 
 # NetworkManager and openrc configuration
-pacman -S networkmanager-openrc connman-openrc --noconfirm
+pacman -S networkmanager-openrc connman connman-openrc --noconfirm
 rc-update add NetworkManager
 rc-update add connmand
 
 # Bootloader installation and configuration
 pacman -S grub efibootmgr os-prober mtools dosfstools --noconfirm
 if [ "$boot" == 1 ]; then
-	grub-install --target=x86_64-efi --efi-directory=/boot/EFI --bootloader-id=GRUB-razakmo --recheck
+	grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=grub
 fi
 if [ "$boot" == 2 ]; then
-	grub-install --target=i386-pc "$disk"
+  grub-install --recheck "$disk"
 fi
 cp /usr/share/locale/en\@quot/LC_MESSAGES/grub.mo /boot/grub/locale/en.mo
 curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/grub -o /etc/default/grub
