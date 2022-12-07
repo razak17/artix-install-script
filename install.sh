@@ -85,6 +85,7 @@ echo "$gpu" >/mnt/tempfiles/gpu
 echo "$boot" >/mnt/tempfiles/boot
 echo "$disk" >/mnt/tempfiles/disk
 echo "$username" >/mnt/tempfiles/username
+echo "$hostname" >/mnt/tempfiles/hostname
 echo "$user_password" >/mnt/tempfiles/user_password
 echo "$root_password" >/mnt/tempfiles/root_password
 echo "$timezone" >/mnt/tempfiles/timezone

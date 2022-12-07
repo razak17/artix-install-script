@@ -8,21 +8,33 @@ gpu="$(</tempfiles/gpu)"
 disk="$(</tempfiles/disk)"
 boot="$(</tempfiles/boot)"
 username="$(</tempfiles/username)"
+hostname="$(</tempfiles/hostname)"
 user_password="$(</tempfiles/user_password)"
 root_password="$(</tempfiles/root_password)"
 timezone="$(</tempfiles/timezone)"
 
+# Configure the system clock
+ln -s /usr/share/zoneinfo/Africa/"$timezone" /etc/localtime
+hwclock --systohc --utc
+
 # Configure locale and clock Settings
 echo 'en_US.UTF-8 UTF-8' >/etc/locale.gen
 echo 'LANG=en_US.UTF-8' >/etc/locale.conf
-
-# Configure the system clock
-ln -s /usr/share/zoneinfo/Africa/"$timezone" /etc/localtime
 locale-gen
-hwclock --systohc --utc
 
-# NetworkManager and openrc configuration
-pacman -S networkmanager-openrc connman connman-openrc --noconfirm
+# Network configuration
+echo "$hostname" >/etc/hostname
+echo "hostname='$hostname'" >/mnt/etc/conf.d/hostname
+
+echo "127.0.0.1       localhost" >>/etc/hosts
+echo "::1             localhost" >>/etc/hosts
+echo "127.0.1.1       $hostname.localdomain $hostname" >>/etc/hosts
+
+echo "nameserver 1.1.1.1" >>/etc/resolv.conf
+echo "nameserver 1.0.0.1" >>/etc/resolv.conf
+chattr +i /etc/resolv.conf
+
+pacman -S networkmanager-openrc connman-openrc --noconfirm
 rc-update add NetworkManager
 rc-update add connmand
 
