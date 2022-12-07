@@ -144,7 +144,7 @@ curl -s https://raw.githubusercontent.com/razak17/dotfiles/main/install.sh | sh
 rm -rf /chrootInstall.sh /tempfiles
 echo -e "\n---------------------------------------------------------"
 echo installation completed!
-echo please poweroff and remove the installation media before powering back on.
-echo -e "---------------------------------------------------------\n"
-exit
+echo "type 'unmount -R /mnt' then reboot"
+echo Do not forget to remove the installation media
+echo -e "---------------------------------------------------------\n" exit
 umount -R /mnt
