@@ -29,10 +29,10 @@ rc-update add connmand
 # Bootloader installation and configuration
 pacman -S grub efibootmgr os-prober mtools dosfstools --noconfirm
 if [ "$boot" == 1 ]; then
-	grub-install --target=x86_64-efi --efi-directory=/boot --bootloader-id=grub
+	grub-install --target=x86_64-efi --efi-directory=/boot/EFI --bootloader-id=GRUB-razakmo
 fi
 if [ "$boot" == 2 ]; then
-  grub-install --recheck "$disk"
+	grub-install --recheck "$disk"
 fi
 cp /usr/share/locale/en\@quot/LC_MESSAGES/grub.mo /boot/grub/locale/en.mo
 curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/grub -o /etc/default/grub
@@ -67,9 +67,10 @@ ln -s /usr/bin/doas /usr/bin/sudo
 curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/makepkg.conf -o /etc/makepkg.conf
 
 # Pacman configuration
-pacman -S artix-archlinux-support --noconfirm
 curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/pacman.conf -o /etc/pacman.conf
-pacman -Syu --noconfirm
+pacman -Sy artix-archlinux-support --noconfirm
+[ -e "/etc/pacman.conf" ] && rm /etc/pacman.conf
+curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/pacman-arch.conf -o /etc/pacman.conf
 pacman -Sy pacman-contrib --noconfirm
 mkdir -p /etc/pacman.d/hooks
 curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/paccache-clean-hook -o /etc/pacman.d/hooks/paccache-clean.hook
