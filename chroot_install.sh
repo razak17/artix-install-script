@@ -139,6 +139,7 @@ rc-update add local default
 
 # Install dotfiles
 curl -s https://raw.githubusercontent.com/razak17/dotfiles/main/install.sh | sh
+cp "/home/$username/.cache/wal/colors-wal-dwm(main).h" "/home/$username/.cache/wal/colors-wal-dwm.h"
 
 # Finishing up + cleaning
 rm -rf /chrootInstall.sh /tempfiles
