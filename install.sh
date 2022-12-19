@@ -1,5 +1,7 @@
 #!/usr/bin/env bash
 
+# Ref: https://github.com/rwinkhart/artix-install-script
+
 loadkeys us
 
 echo -e '\nspecial devices:\n1. asus zephyrus g14 (2020)\ngeneric:\n2. laptop\n3. desktop\n4. server\n'
