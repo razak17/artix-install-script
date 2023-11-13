@@ -91,6 +91,9 @@ if [ "$gpu" == 'NVIDIA' ]; then
 	curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/nvidia-hook -o /etc/pacman.d/hooks/nvidia.hook
 fi
 
+# Captive Portals
+curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/captive-portal -o /etc/NetworkManager/dispatcher.d/90-open_captive_portal
+echo "==> INFO: Create /etc/NetworkManager/dispatcher.d/90-open_captive_portal successfully"
 # Installing hardware-specific packages
 if [ "$cpu" == 'AuthenticAMD' ]; then
 	pacman -S amd-ucode --noconfirm
