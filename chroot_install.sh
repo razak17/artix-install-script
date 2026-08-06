@@ -1,154 +1,159 @@
 #!/usr/bin/env bash
+set -Eeuo pipefail
 
-# Importing Variables
-formfactor="$(</tempfiles/formfactor)"
-cpu="$(</tempfiles/cpu)"
-threads_minus_one="$(</tempfiles/threads_minus_one)"
-gpu="$(</tempfiles/gpu)"
-disk="$(</tempfiles/disk)"
-boot="$(</tempfiles/boot)"
-username="$(</tempfiles/username)"
-hostname="$(</tempfiles/hostname)"
-user_password="$(</tempfiles/user_password)"
-root_password="$(</tempfiles/root_password)"
-timezone="$(</tempfiles/timezone)"
+readonly INSTALLER_ROOT=/root/artix-installer
+readonly ENV_FILE=/root/artix-installer.env
 
-# Configure the system clock
-ln -s /usr/share/zoneinfo/Africa/"$timezone" /etc/localtime
-hwclock --systohc --utc
+# shellcheck source=lib/common.sh
+source "$INSTALLER_ROOT/lib/common.sh"
+[[ -r "$ENV_FILE" ]] || die "Missing chroot environment: $ENV_FILE"
+# shellcheck disable=SC1090
+source "$ENV_FILE"
 
-# Configure locale and clock Settings
-echo 'en_US.UTF-8 UTF-8' >/etc/locale.gen
-echo 'LANG=en_US.UTF-8' >/etc/locale.conf
-locale-gen
+: "${INSTALL_USER:?}"
+: "${INSTALL_HOSTNAME:?}"
+: "${LUKS_UUID:?}"
+: "${ESP_UUID:?}"
+: "${TIMEZONE:?}"
 
-# Network configuration
-echo "$hostname" >/etc/hostname
-echo "hostname='$hostname'" >/mnt/etc/conf.d/hostname
+configure_base_system() {
+    log "Configuring timezone, locale and hostname"
+    ln -sf "/usr/share/zoneinfo/$TIMEZONE" /etc/localtime
+    hwclock --systohc --utc
+    printf 'en_US.UTF-8 UTF-8\n' > /etc/locale.gen
+    locale-gen
+    printf 'LANG=en_US.UTF-8\n' > /etc/locale.conf
+    printf 'KEYMAP=us\n' > /etc/vconsole.conf
+    printf '%s\n' "$INSTALL_HOSTNAME" > /etc/hostname
+    cat > /etc/hosts <<EOF
+127.0.0.1 localhost
+::1 localhost
+127.0.1.1 $INSTALL_HOSTNAME.localdomain $INSTALL_HOSTNAME
+EOF
+}
 
-echo "127.0.0.1       localhost" >>/etc/hosts
-echo "::1             localhost" >>/etc/hosts
-echo "127.0.1.1       $hostname.localdomain $hostname" >>/etc/hosts
+configure_user() {
+    log "Creating user $INSTALL_USER"
+    getent group wheel >/dev/null || groupadd wheel
+    useradd --create-home --groups wheel --shell /bin/bash "$INSTALL_USER"
 
-echo "nameserver 1.1.1.1" >>/etc/resolv.conf
-echo "nameserver 1.0.0.1" >>/etc/resolv.conf
-chattr +i /etc/resolv.conf
+    printf '\nSet the root password.\n'
+    passwd root
+    printf '\nSet the password for %s.\n' "$INSTALL_USER"
+    passwd "$INSTALL_USER"
 
-pacman -S networkmanager-openrc connman-openrc --noconfirm
-rc-update add NetworkManager
-rc-update add connmand
+    cat > /etc/doas.conf <<EOF
+permit keepenv :wheel
+permit nopass $INSTALL_USER as root cmd /usr/bin/poweroff
+permit nopass $INSTALL_USER as root cmd /usr/bin/reboot
+EOF
+    chmod 0400 /etc/doas.conf
+    doas -C /etc/doas.conf >/dev/null
+}
 
-# Bootloader installation and configuration
-pacman -S grub efibootmgr os-prober mtools dosfstools --noconfirm
-if [ "$boot" == 1 ]; then
-	grub-install --target=x86_64-efi --efi-directory=/boot/EFI --bootloader-id=GRUB-razakmo
-fi
-if [ "$boot" == 2 ]; then
-	grub-install --recheck "$disk"
-fi
-cp /usr/share/locale/en\@quot/LC_MESSAGES/grub.mo /boot/grub/locale/en.mo
-curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/grub -o /etc/default/grub
-if [ "$gpu" != 'NVIDIA' ]; then
-	echo "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet nowatchdog retbleed=off mem_sleep_default=deep nohz_full=1-$threads_minus_one\"" >>/etc/default/grub
-else
-	echo "GRUB_CMDLINE_LINUX_DEFAULT=\"loglevel=3 quiet nowatchdog retbleed=off mem_sleep_default=deep nohz_full=1-$threads_minus_one nvidia-drm.modeset=1\"" >>/etc/default/grub
-fi
-grub-mkconfig -o /boot/grub/grub.cfg
+configure_services() {
+    log "Enabling NetworkManager"
+    rc-update add NetworkManager default
+}
 
-# Add User
-groupadd classmod
-echo "$root_password
-$root_password
-" | passwd
-useradd -m -g users -G classmod "$username"
-echo "$user_password
-$user_password
-" | passwd "$username"
+configure_encrypted_boot() {
+    local hooks
+    hooks="$(grep -E '^HOOKS=' /etc/mkinitcpio.conf)"
+    [[ -n "$hooks" ]] || die "Could not find HOOKS in /etc/mkinitcpio.conf"
 
-# Opendoas configuration
-[ -e "/etc/doas.conf" ] && rm /etc/doas.conf
-[ -e "/usr/bin/sudo" ] && rm /usr/bin/sudo
-echo "permit persist keepenv $username as root
-permit nopass $username as root cmd /usr/bin/poweroff
-permit nopass $username as root cmd /usr/bin/reboot
-" >/etc/doas.conf
-curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/doas-completion -o /usr/share/bash-completion/completions/doas
-ln -s /usr/bin/doas /usr/bin/sudo
+    if ! grep -qw encrypt <<<"$hooks"; then
+        sed -Ei '/^HOOKS=/ s/(block)([[:space:]])/\1 encrypt\2/' /etc/mkinitcpio.conf
+    fi
 
-# Misc. configuration
-curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/makepkg.conf -o /etc/makepkg.conf
+    hooks="$(grep -E '^HOOKS=' /etc/mkinitcpio.conf)"
+    grep -qw encrypt <<<"$hooks" || die "Failed to add the encrypt initramfs hook"
+    mkinitcpio -P
+}
 
-# Pacman configuration
-curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/pacman.conf -o /etc/pacman.conf
-pacman -Sy artix-archlinux-support --noconfirm
-[ -e "/etc/pacman.conf" ] && rm /etc/pacman.conf
-curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/pacman-arch.conf -o /etc/pacman.conf
-pacman -Sy pacman-contrib --noconfirm
-mkdir -p /etc/pacman.d/hooks
-curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/paccache-clean-hook -o /etc/pacman.d/hooks/paccache-clean.hook
-curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/modemmanager-hook -o /etc/pacman.d/hooks/modemmanager.hook
-if [ "$gpu" == 'NVIDIA' ]; then
-	curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/nvidia-hook -o /etc/pacman.d/hooks/nvidia.hook
-fi
+configure_swap_file() {
+    log "Creating an 8 GiB encrypted swap file"
+    if [[ ! -e /swapfile ]]; then
+        fallocate -l 8G /swapfile
+        chmod 0600 /swapfile
+        mkswap /swapfile
+    fi
+    grep -qE '^/swapfile[[:space:]]' /etc/fstab ||
+        printf '/swapfile none swap defaults 0 0\n' >> /etc/fstab
+}
 
-# Captive Portals
-curl https://raw.githubusercontent.com/razak17/artix-install-script/main/config-files/captive-portal -o /etc/NetworkManager/dispatcher.d/90-open_captive_portal
-echo "==> INFO: Create /etc/NetworkManager/dispatcher.d/90-open_captive_portal successfully"
-# Installing hardware-specific packages
-if [ "$cpu" == 'AuthenticAMD' ]; then
-	pacman -S amd-ucode --noconfirm
-else
-	pacman -S intel-ucode --noconfirm
-fi
-if [ "$gpu" == 'AMD' ] || [ "$gpu" == 'Advanced' ]; then
-	pacman -S mesa vulkan-icd-loader vulkan-radeon libva-mesa-driver libva-utils --needed --noconfirm
-elif [ "$gpu" == 'Intel' ]; then
-	pacman -S mesa vulkan-icd-loader vulkan-intel --needed --noconfirm
-elif [ "$gpu" == 'NVIDIA' ]; then
-	pacman -S nvidia nvidia-utils nvidia-settings vulkan-icd-loader --needed --noconfirm
-	echo 'options nvidia "NVreg_DynamicPowerManagement=0x02"' >/etc/modprobe.d/nvidia.conf
-	echo 'options nvidia-drm modeset=1' >/etc/modprobe.d/zz-nvidia-modeset.conf
-fi
+configure_grub() {
+    local custom_windows_entry="" efi_entries
+    log "Installing GRUB without modifying the Microsoft EFI directory"
+    cat > /etc/default/grub <<EOF
+GRUB_DEFAULT=0
+GRUB_TIMEOUT=5
+GRUB_TIMEOUT_STYLE=menu
+GRUB_DISTRIBUTOR="Artix"
+GRUB_PRELOAD_MODULES="part_gpt part_msdos"
+GRUB_TERMINAL_INPUT=console
+GRUB_GFXMODE=auto
+GRUB_GFXPAYLOAD_LINUX=keep
+GRUB_DISABLE_RECOVERY=true
+GRUB_DISABLE_OS_PROBER=false
+GRUB_CMDLINE_LINUX="cryptdevice=UUID=$LUKS_UUID:cryptroot root=/dev/mapper/cryptroot"
+GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3"
+EOF
 
-# Disable kernel watchdog
-echo 'blacklist iTCO_wdt' >/etc/modprobe.d/blacklist.conf
+    if ! os-prober | grep -qi windows; then
+        custom_windows_entry="menuentry 'Windows Boot Manager' --class windows --class os {
+    insmod part_gpt
+    insmod fat
+    search --no-floppy --fs-uuid --set=esp $ESP_UUID
+    chainloader (\$esp)/EFI/Microsoft/Boot/bootmgfw.efi
+}"
+        warn "os-prober did not detect Windows; installing a verified EFI fallback entry"
+    fi
 
-if [ "$formfactor" == 2 ] || [ "$formfactor" == 1 ]; then
-	pacman -S powertop acpid-openrc acpilight --needed --noconfirm
-	rc-update add acpid
-	echo 'SUBSYSTEM=="backlight", ACTION=="add", \
-        RUN+="/bin/chgrp classmod /sys/class/backlight/%k/brightness", \
-        RUN+="/bin/chmod g+w /sys/class/backlight/%k/brightness"
-    ' >/etc/udev/rules.d/screenbacklight.rules
-fi
+    cat > /etc/grub.d/40_custom <<EOF
+#!/bin/sh
+exec tail -n +3 \$0
+$custom_windows_entry
+EOF
+    chmod 0755 /etc/grub.d/40_custom
 
-# Set home directory permissions
-mkdir -p /home/"$username"/{.config,.local/share}
-chmod 700 /home/"$username"
-chown "$username":users /home/"$username"/{.config,.local}
-chown "$username":users /home/"$username"/.local/share
-chmod 755 /home/"$username"/{.config,.local/share}
+    grub-install \
+        --target=x86_64-efi \
+        --efi-directory=/boot/efi \
+        --bootloader-id=Artix \
+        --recheck
+    grub-mkconfig -o /boot/grub/grub.cfg
 
-# ssh configuration
-pacman -S openssh --needed --noconfirm
-mkdir /home/"$username"/.ssh
-touch /home/"$username"/.ssh/authorized_keys
-chown -R "$username" /home/"$username"/.ssh
-chmod 600 /home/"$username"/.ssh/authorized_keys
+    grep -q 'Windows Boot Manager' /boot/grub/grub.cfg ||
+        die "GRUB configuration does not contain Windows Boot Manager"
+    efi_entries="$(efibootmgr)"
+    grep -qi 'Artix' <<<"$efi_entries" || die "Artix UEFI boot entry was not created"
+    grep -qi 'Windows Boot Manager' <<<"$efi_entries" ||
+        die "Existing Windows UEFI boot entry was not found"
+}
 
-# misc configuration
-pacman -S dhcpcd neofetch --needed --noconfirm
-rc-update add local default
+verify_graphics() {
+    local pci_data
+    pci_data="$(lspci -Dn)"
+    if grep -qE '030[02]:.*1002:' <<<"$pci_data"; then
+        log "AMD integrated graphics detected and configured"
+    else
+        warn "AMD graphics was not detected"
+    fi
+    if grep -qE '030[02]:.*10de:' <<<"$pci_data"; then
+        log "Nvidia GPU detected; its optional driver is deferred until first boot"
+    fi
+}
 
-# Install dotfiles
-curl -s https://raw.githubusercontent.com/razak17/dotfiles/main/install.sh | sh
-cp "/home/$username/.cache/wal/colors-wal-dwm(main).h" "/home/$username/.cache/wal/colors-wal-dwm.h"
+main() {
+    configure_base_system
+    configure_user
+    configure_services
+    configure_encrypted_boot
+    configure_swap_file
+    configure_grub
+    verify_graphics
+    rm -f "$ENV_FILE"
+    log "Chroot configuration completed"
+}
 
-# Finishing up + cleaning
-rm -rf /chrootInstall.sh /tempfiles
-echo -e "\n---------------------------------------------------------"
-echo installation completed!
-echo "type 'unmount -R /mnt' then reboot"
-echo Do not forget to remove the installation media
-echo -e "---------------------------------------------------------\n" exit
-umount -R /mnt
+main "$@"

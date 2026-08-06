@@ -1,98 +1,184 @@
 #!/usr/bin/env bash
+set -Eeuo pipefail
 
-# Ref: https://github.com/rwinkhart/artix-install-script
+readonly SCRIPT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 
-loadkeys us
+# shellcheck source=lib/common.sh
+source "$SCRIPT_DIR/lib/common.sh"
+# shellcheck source=lib/devices.sh
+source "$SCRIPT_DIR/lib/devices.sh"
+# shellcheck source=lib/storage.sh
+source "$SCRIPT_DIR/lib/storage.sh"
 
-echo -e '\nspecial devices:\n1. asus zephyrus g14 (2020)\ngeneric:\n2. laptop\n3. desktop\n4. server\n'
-read -n 1 -r -p "formfactor: " formfactor
+DISK=""
+ESP_PARTITION=""
+BOOT_PARTITION=""
+ROOT_PARTITION=""
+USERNAME=""
+HOSTNAME=""
+PREFLIGHT_ONLY=false
 
-fdisk -l
-read -rp "disk: (eg: /dev/sda) " disk
+usage() {
+    cat <<'EOF'
+Usage: ./install.sh [options]
 
-# Partition disk
-# boot
-read -rp "Enter boot partiton (eg. /dev/sda2): " boot_partition
-if [ -n "$boot_partition" ]; then
-	mkfs.fat -F 32 "$boot_partition"
-	fatlabel "$boot_partition" BOOT
-else
-	echo "No boot partition entered" && exit 1
-fi
+Required options may also be entered interactively:
+  --disk DEVICE       Parent GPT disk, for example /dev/nvme0n1
+  --esp DEVICE        Existing Windows EFI System Partition; never formatted
+  --boot DEVICE       New Artix /boot partition; WILL BE ERASED
+  --root DEVICE       New Artix encrypted-root partition; WILL BE ERASED
+  --user NAME         Initial user name
+  --hostname NAME     Host name
 
-# root
-read -rp "Enter root partiton: " root_partition
-if [ -n "$root_partition" ]; then
-	mkfs.ext4 -L ROOT "$root_partition"
-else
-	echo "No root partition entered" && exit 1
-fi
+Other options:
+  --preflight-only    Validate and print the plan without formatting anything
+  -h, --help          Show this help
+EOF
+}
 
-# home
-read -rp "Enter home partiton: " home_partition
-if [ -n "$home_partition" ]; then
-	mkfs.ext4 -L HOME "$home_partition"
-else
-	echo "No home partition entered" && exit 1
-fi
+parse_args() {
+    while (($#)); do
+        case "$1" in
+            --disk) DISK="${2:?missing value for --disk}"; shift 2 ;;
+            --esp) ESP_PARTITION="${2:?missing value for --esp}"; shift 2 ;;
+            --boot) BOOT_PARTITION="${2:?missing value for --boot}"; shift 2 ;;
+            --root) ROOT_PARTITION="${2:?missing value for --root}"; shift 2 ;;
+            --user) USERNAME="${2:?missing value for --user}"; shift 2 ;;
+            --hostname) HOSTNAME="${2:?missing value for --hostname}"; shift 2 ;;
+            --preflight-only) PREFLIGHT_ONLY=true; shift ;;
+            -h|--help) usage; exit 0 ;;
+            *) die "Unknown option: $1" ;;
+        esac
+    done
+}
 
-# Mount partitions
-mount /dev/disk/by-label/ROOT /mnt
-mkdir /mnt/boot
-mkdir /mnt/home
-mount /dev/disk/by-label/HOME /mnt/home
-mount /dev/disk/by-label/BOOT /mnt/boot
+prompt_missing_values() {
+    print_block_devices
+    [[ -n "$DISK" ]] || read -r -p "Parent disk: " DISK
+    [[ -n "$ESP_PARTITION" ]] || read -r -p "Existing Windows ESP (preserved): " ESP_PARTITION
+    [[ -n "$BOOT_PARTITION" ]] || read -r -p "New Artix /boot partition (erased): " BOOT_PARTITION
+    [[ -n "$ROOT_PARTITION" ]] || read -r -p "New Artix encrypted-root partition (erased): " ROOT_PARTITION
+    [[ -n "$USERNAME" ]] || read -r -p "User name: " USERNAME
+    [[ -n "$HOSTNAME" ]] || read -r -p "Host name: " HOSTNAME
+}
 
-# update system clock
-rc-service ntpd start
+validate_identity() {
+    [[ "$USERNAME" =~ ^[a-z_][a-z0-9_-]{0,31}$ ]] ||
+        die "Invalid user name: $USERNAME"
+    [[ "$HOSTNAME" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]{0,62}$ ]] ||
+        die "Invalid host name: $HOSTNAME"
+}
 
-# Install base system
-base_devel='db diffutils gc guile libisl libmpc perl autoconf automake bash zsh binutils bison esysusers etmpfiles fakeroot file findutils flex gawk gcc gettext grep groff gzip libtool m4 cmake pacman pacman-contrib patch pkgconf python sed opendoas texinfo which bc udev'
-basestrap /mnt base $base_devel openrc elogind-openrc linux linux-firmware git micro man-db curl
+preflight() {
+    require_root
+    require_uefi
+    require_artix_openrc_live
+    require_commands \
+        artix-chroot basestrap blkid blockdev cryptsetup curl df findmnt \
+        fstabgen lsblk mkfs.ext4 mktemp mount mountpoint numfmt readlink umount
+    require_network
+    validate_identity
+    validate_install_devices "$DISK" "$ESP_PARTITION" "$BOOT_PARTITION" "$ROOT_PARTITION"
+    [[ ! -e /dev/mapper/cryptroot ]] || die "/dev/mapper/cryptroot already exists"
+    findmnt -rn /mnt >/dev/null 2>&1 && die "/mnt is already a mount point"
+    verify_esp_contents_readonly "$ESP_PARTITION"
+    require_windows_prepared
+}
 
-# Generate fstab
-fstabgen -U /mnt >>/mnt/etc/fstab
+show_plan() {
+    local boot_size root_size
+    boot_size="$(human_size "$(device_size_bytes "$BOOT_PARTITION")")"
+    root_size="$(human_size "$(device_size_bytes "$ROOT_PARTITION")")"
 
-# User Info
-read -rp "username: " username
-read -rp "$username password: " user_password
-read -rp "root password: " root_password
-read -rp "hostname (eg: Artix): " hostname
-read -rp "timezone (eg. Accra): " timezone
+    cat <<EOF
 
-# Start hardware detection
-cpu=$(lscpu | grep 'Vendor ID:' | awk 'FNR == 1 {print $3;}')
-threads_minus_one=$(echo "$(lscpu | grep 'CPU(s):' | awk 'FNR == 1 {print $2;}') - 1" | bc)
-gpu=$(lspci | grep 'VGA compatible controller:' | awk 'FNR == 1 {print $5;}')
-ram=$(echo "$(</proc/meminfo)" | grep 'MemTotal:' | awk '{print $2;}')
-ram=$(echo "$ram / 1000000" | bc)
+Installation plan
+=================
+Parent disk:       $DISK
+Preserve ESP:      $ESP_PARTITION ($(filesystem_type "$ESP_PARTITION"))
+ERASE for /boot:   $BOOT_PARTITION ($boot_size)
+ERASE for LUKS:    $ROOT_PARTITION ($root_size)
+Encrypted mapping: /dev/mapper/cryptroot
+User / hostname:   $USERNAME / $HOSTNAME
 
-# start variable manipulation
-username=$(echo "$username" | tr '[:upper:]' '[:lower:]')
-hostname=$(echo "$hostname" | tr '[:upper:]' '[:lower:]')
+The installer will not resize Windows, format the ESP, or reboot automatically.
+EOF
+}
 
-# determine if running as UEFI or BIOS
-if [ -d "/sys/firmware/efi" ]; then
-	boot=1
-else
-	boot=2
-fi
+confirm_destructive_actions() {
+    local expected answer
+    expected="ERASE $BOOT_PARTITION AND $ROOT_PARTITION"
+    printf '\nType exactly: %s\n> ' "$expected"
+    read -r answer
+    [[ "$answer" == "$expected" ]] || die "Confirmation did not match; nothing was changed"
+}
 
-# exporting variables
-mkdir /mnt/tempfiles
-echo "$formfactor" >/mnt/tempfiles/formfactor
-echo "$cpu" >/mnt/tempfiles/cpu
-echo "$threads_minus_one" >/mnt/tempfiles/threads_minus_one
-echo "$gpu" >/mnt/tempfiles/gpu
-echo "$boot" >/mnt/tempfiles/boot
-echo "$disk" >/mnt/tempfiles/disk
-echo "$username" >/mnt/tempfiles/username
-echo "$hostname" >/mnt/tempfiles/hostname
-echo "$user_password" >/mnt/tempfiles/user_password
-echo "$root_password" >/mnt/tempfiles/root_password
-echo "$timezone" >/mnt/tempfiles/timezone
+bootstrap_system() {
+    local -a packages=(
+        base base-devel openrc openrc-system elogind-openrc linux linux-firmware amd-ucode
+        cryptsetup grub efibootmgr os-prober mtools dosfstools ntfs-3g
+        networkmanager-openrc mesa vulkan-icd-loader vulkan-radeon
+        libva-mesa-driver libva-utils opendoas
+        git curl micro man-db openssh pciutils
+    )
 
-# Download and initiate part 2
-curl https://raw.githubusercontent.com/razak17/artix-install-script/main/chroot_install.sh -o /mnt/chroot_install.sh
-chmod +x /mnt/chroot_install.sh
-artix-chroot /mnt /chroot_install.sh
+    log "Bootstrapping Artix OpenRC"
+    basestrap /mnt "${packages[@]}"
+    fstabgen -U /mnt > /mnt/etc/fstab
+}
+
+copy_installer_resources() {
+    local target=/mnt/root/artix-installer
+    install -d -m 700 "$target" "$target/lib" "$target/post-install"
+    install -m 700 "$SCRIPT_DIR/chroot_install.sh" "$target/chroot_install.sh"
+    install -m 600 "$SCRIPT_DIR/lib/common.sh" "$target/lib/common.sh"
+    install -m 700 "$SCRIPT_DIR/post-install/nvidia.sh" "$target/post-install/nvidia.sh"
+}
+
+write_chroot_environment() {
+    local luks_uuid esp_uuid env_file=/mnt/root/artix-installer.env
+    luks_uuid="$(blkid -s UUID -o value "$ROOT_PARTITION")"
+    esp_uuid="$(blkid -s UUID -o value "$ESP_PARTITION")"
+    [[ -n "$luks_uuid" && -n "$esp_uuid" ]] || die "Could not determine required UUIDs"
+
+    umask 077
+    {
+        printf 'INSTALL_USER=%q\n' "$USERNAME"
+        printf 'INSTALL_HOSTNAME=%q\n' "$HOSTNAME"
+        printf 'LUKS_UUID=%q\n' "$luks_uuid"
+        printf 'ESP_UUID=%q\n' "$esp_uuid"
+        printf 'TIMEZONE=%q\n' "Africa/Accra"
+    } > "$env_file"
+}
+
+main() {
+    parse_args "$@"
+    prompt_missing_values
+    canonicalize_install_devices
+    preflight
+    show_plan
+
+    if [[ "$PREFLIGHT_ONLY" == true ]]; then
+        log "Preflight passed; no changes were made"
+        return 0
+    fi
+
+    confirm_destructive_actions
+    install_cleanup_trap
+    prepare_storage "$ESP_PARTITION" "$BOOT_PARTITION" "$ROOT_PARTITION"
+    verify_windows_boot_files
+    bootstrap_system
+    copy_installer_resources
+    write_chroot_environment
+
+    log "Entering chroot; you will be prompted for passwords"
+    artix-chroot /mnt /root/artix-installer/chroot_install.sh
+
+    sync
+    cleanup_install_resources
+    trap - EXIT ERR INT TERM
+    log "Installation completed. Remove the installer USB and reboot when ready."
+    log "After the first Artix boot, Nvidia setup is available at /root/artix-installer/post-install/nvidia.sh"
+}
+
+main "$@"
