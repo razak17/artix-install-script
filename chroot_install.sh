@@ -1,20 +1,24 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-readonly INSTALLER_ROOT=/root/artix-installer
+readonly INSTALLER_ROOT="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)"
 readonly ENV_FILE=/root/artix-installer.env
 
 # shellcheck source=lib/common.sh
 source "$INSTALLER_ROOT/lib/common.sh"
-[[ -r "$ENV_FILE" ]] || die "Missing chroot environment: $ENV_FILE"
-# shellcheck disable=SC1090
-source "$ENV_FILE"
 
-: "${INSTALL_USER:?}"
-: "${INSTALL_HOSTNAME:?}"
-: "${LUKS_UUID:?}"
-: "${ESP_UUID:?}"
-: "${TIMEZONE:?}"
+load_install_environment() {
+    [[ -r "$ENV_FILE" ]] || die "Missing chroot environment: $ENV_FILE"
+    # shellcheck disable=SC1090
+    source "$ENV_FILE"
+    : "${INSTALL_USER:?}" "${INSTALL_HOSTNAME:?}" "${LUKS_UUID:?}" "${TIMEZONE:?}"
+    : "${INSTALL_MODE:?}" "${BOOT_MODE:?}" "${INSTALL_DISK:?}"
+    case "$INSTALL_MODE/$BOOT_MODE" in
+        dual-boot/uefi|standalone/uefi) : "${ESP_UUID:?}" ;;
+        standalone/bios) ;;
+        *) die "Invalid installation/boot mode in chroot environment" ;;
+    esac
+}
 
 configure_base_system() {
     log "Configuring timezone, locale and hostname"
@@ -82,8 +86,9 @@ configure_swap_file() {
 }
 
 configure_grub() {
-    local custom_windows_entry="" efi_entries
-    log "Installing GRUB without modifying the Microsoft EFI directory"
+    local custom_windows_entry="" efi_entries disable_os_prober=true
+    [[ "$INSTALL_MODE" != dual-boot ]] || disable_os_prober=false
+    log "Installing GRUB for $INSTALL_MODE / $BOOT_MODE"
     cat > /etc/default/grub <<EOF
 GRUB_DEFAULT=0
 GRUB_TIMEOUT=5
@@ -94,12 +99,12 @@ GRUB_TERMINAL_INPUT=console
 GRUB_GFXMODE=auto
 GRUB_GFXPAYLOAD_LINUX=keep
 GRUB_DISABLE_RECOVERY=true
-GRUB_DISABLE_OS_PROBER=false
+GRUB_DISABLE_OS_PROBER=$disable_os_prober
 GRUB_CMDLINE_LINUX="cryptdevice=UUID=$LUKS_UUID:cryptroot root=/dev/mapper/cryptroot"
 GRUB_CMDLINE_LINUX_DEFAULT="quiet loglevel=3"
 EOF
 
-    if ! os-prober | grep -qi windows; then
+    if [[ "$INSTALL_MODE" == dual-boot ]] && ! os-prober | grep -qi windows; then
         custom_windows_entry="menuentry 'Windows Boot Manager' --class windows --class os {
     insmod part_gpt
     insmod fat
@@ -116,19 +121,29 @@ $custom_windows_entry
 EOF
     chmod 0755 /etc/grub.d/40_custom
 
-    grub-install \
-        --target=x86_64-efi \
-        --efi-directory=/boot/efi \
-        --bootloader-id=Artix \
-        --recheck
+    if [[ "$BOOT_MODE" == uefi ]]; then
+        grub-install \
+            --target=x86_64-efi \
+            --efi-directory=/boot/efi \
+            --bootloader-id=Artix \
+            --recheck
+    else
+        grub-install --target=i386-pc --recheck "$INSTALL_DISK"
+    fi
     grub-mkconfig -o /boot/grub/grub.cfg
 
-    grep -q 'Windows Boot Manager' /boot/grub/grub.cfg ||
-        die "GRUB configuration does not contain Windows Boot Manager"
-    efi_entries="$(efibootmgr)"
-    grep -qi 'Artix' <<<"$efi_entries" || die "Artix UEFI boot entry was not created"
-    grep -qi 'Windows Boot Manager' <<<"$efi_entries" ||
-        die "Existing Windows UEFI boot entry was not found"
+    if [[ "$INSTALL_MODE" == dual-boot ]]; then
+        grep -q 'Windows Boot Manager' /boot/grub/grub.cfg ||
+            die "GRUB configuration does not contain Windows Boot Manager"
+    fi
+    if [[ "$BOOT_MODE" == uefi ]]; then
+        efi_entries="$(efibootmgr)"
+        grep -qi 'Artix' <<<"$efi_entries" || die "Artix UEFI boot entry was not created"
+        if [[ "$INSTALL_MODE" == dual-boot ]]; then
+            grep -qi 'Windows Boot Manager' <<<"$efi_entries" ||
+                die "Existing Windows UEFI boot entry was not found"
+        fi
+    fi
 }
 
 verify_graphics() {
@@ -145,6 +160,7 @@ verify_graphics() {
 }
 
 main() {
+    load_install_environment
     configure_base_system
     configure_user
     configure_services
@@ -156,4 +172,4 @@ main() {
     log "Chroot configuration completed"
 }
 
-main "$@"
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then main "$@"; fi

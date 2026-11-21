@@ -28,6 +28,11 @@ install_cleanup_trap() {
     trap cleanup_install_resources EXIT
 }
 
+require_install_mounts_available() {
+    [[ ! -e /dev/mapper/cryptroot ]] || die "/dev/mapper/cryptroot already exists"
+    if findmnt -rn /mnt >/dev/null 2>&1; then die "/mnt is already a mount point"; fi
+}
+
 prepare_storage() {
     local esp=$1 boot=$2 root=$3
 
@@ -46,9 +51,11 @@ prepare_storage() {
     install -d /mnt/boot
     mount "$boot" /mnt/boot
     INSTALL_MOUNTS+=(/mnt/boot)
-    install -d /mnt/boot/efi
-    mount "$esp" /mnt/boot/efi
-    INSTALL_MOUNTS+=(/mnt/boot/efi)
+    if [[ "${BOOT_MODE:-uefi}" == uefi ]]; then
+        install -d /mnt/boot/efi
+        mount "$esp" /mnt/boot/efi
+        INSTALL_MOUNTS+=(/mnt/boot/efi)
+    fi
 }
 
 verify_windows_boot_files() {

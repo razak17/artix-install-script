@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 
+readonly BIOS_BOOT_GUID="21686148-6449-6e6f-744e-656564454649"
 readonly EFI_SYSTEM_GUID="c12a7328-f81f-11d2-ba4b-00a0c93ec93b"
 readonly MICROSOFT_BASIC_GUID="ebd0a0a2-b9e5-4433-87c0-68b6b72699c7"
 readonly MICROSOFT_RESERVED_GUID="e3c9e316-0b5c-4db8-817d-f92df00215ae"
@@ -47,7 +48,8 @@ is_mounted() {
 
 canonicalize_install_devices() {
     DISK="$(canonical_device "$DISK")"
-    ESP_PARTITION="$(canonical_device "$ESP_PARTITION")"
+    if [[ -n "$ESP_PARTITION" ]]; then ESP_PARTITION="$(canonical_device "$ESP_PARTITION")"; fi
+    if [[ -n "${BIOS_BOOT_PARTITION:-}" ]]; then BIOS_BOOT_PARTITION="$(canonical_device "$BIOS_BOOT_PARTITION")"; fi
     BOOT_PARTITION="$(canonical_device "$BOOT_PARTITION")"
     ROOT_PARTITION="$(canonical_device "$ROOT_PARTITION")"
 }
@@ -109,8 +111,9 @@ verify_esp_contents_readonly() {
         die "Could not mount the ESP read-only for verification"
     fi
 
-    [[ -f "$temporary_mount/EFI/Microsoft/Boot/bootmgfw.efi" ]] ||
+    if [[ "${INSTALL_MODE:-dual-boot}" == dual-boot && ! -f "$temporary_mount/EFI/Microsoft/Boot/bootmgfw.efi" ]]; then
         problem="Windows Boot Manager is missing from the selected ESP"
+    fi
     available_bytes="$(df --output=avail -B1 "$temporary_mount" | tail -n 1 | tr -d ' ')"
     if [[ "$available_bytes" =~ ^[0-9]+$ ]] && ((available_bytes < 16777216)); then
         problem="The selected ESP has less than 16 MiB free"
@@ -135,23 +138,33 @@ require_windows_prepared() {
     [[ "$answer" == "$expected" ]] || die "Windows preparation was not confirmed"
 }
 
+require_bios_boot() {
+    local device=$1
+    [[ "$(partition_type "$device")" == "$BIOS_BOOT_GUID" ]] || die "Not a GPT BIOS boot partition: $device"
+    [[ -z "$(filesystem_type "$device")" ]] || die "BIOS boot partition must be unformatted: $device"
+    (( $(device_size_bytes "$device") >= 1048576 )) || die "BIOS boot partition must be at least 1 MiB"
+}
+
 validate_install_devices() {
-    local disk=$1 esp=$2 boot=$3 root=$4 boot_size root_size
+    local disk=$1 esp=$2 boot=$3 root=$4 bios=${5:-} boot_size root_size partition firmware_partition
     require_disk "$disk"
-    require_partition "$esp"
-    require_partition "$boot"
-    require_partition "$root"
-
-    [[ "$esp" != "$boot" && "$esp" != "$root" && "$boot" != "$root" ]] ||
-        die "ESP, /boot and encrypted-root targets must be distinct"
-
-    require_same_parent_disk "$disk" "$esp"
-    require_same_parent_disk "$disk" "$boot"
-    require_same_parent_disk "$disk" "$root"
-    require_unmounted "$esp"
-    require_unmounted "$boot"
-    require_unmounted "$root"
-    require_esp "$esp"
+    if [[ "${BOOT_MODE:-uefi}" == uefi ]]; then
+        [[ -z "$bios" ]] || die "--bios-boot is only valid in BIOS mode"
+        [[ -n "$esp" ]] || die "UEFI requires --esp"
+        firmware_partition=$esp
+    else
+        [[ -z "$esp" ]] || die "--esp is only valid in UEFI mode"
+        [[ -n "$bios" ]] || die "BIOS requires --bios-boot"
+        firmware_partition=$bios
+    fi
+    [[ "$firmware_partition" != "$boot" && "$firmware_partition" != "$root" && "$boot" != "$root" ]] ||
+        die "Firmware, /boot and encrypted-root targets must be distinct"
+    for partition in "$firmware_partition" "$boot" "$root"; do
+        require_partition "$partition"
+        require_same_parent_disk "$disk" "$partition"
+        require_unmounted "$partition"
+    done
+    if [[ "${BOOT_MODE:-uefi}" == uefi ]]; then require_esp "$esp"; else require_bios_boot "$bios"; fi
     require_safe_linux_target "$boot" 805306368
     require_safe_linux_target "$root" 42949672960
     boot_size="$(device_size_bytes "$boot")"
